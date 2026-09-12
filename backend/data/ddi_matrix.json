@@ -1,0 +1,51 @@
+[
+  {
+    "salts": ["aspirin", "ibuprofen"],
+    "severity": "HIGH_RISK",
+    "title": "Severe Gastrointestinal Bleeding Risk",
+    "description": "Combining Aspirin with Ibuprofen significantly increases the risk of upper GI ulceration and major internal bleeding. Ibuprofen also blocks the antiplatelet effect of low-dose Aspirin.",
+    "recommendation": "Avoid concurrent use. Consult physician for gastro-protective analgesic alternative (e.g. Paracetamol)."
+  },
+  {
+    "salts": ["aspirin", "diclofenac"],
+    "severity": "HIGH_RISK",
+    "title": "Dual NSAID Toxicity & Renal Distress",
+    "description": "Co-administration of Aspirin and Diclofenac (Voveran) markedly elevates stomach ulceration risk and causes acute reduction in renal perfusion.",
+    "recommendation": "Do not take concurrently. Doctor verification required immediately."
+  },
+  {
+    "salts": ["aspirin", "aceclofenac"],
+    "severity": "HIGH_RISK",
+    "title": "Enhanced Ulcerogenic & Bleeding Hazard",
+    "description": "Combining Aspirin with Aceclofenac (Zerodol) synergistically damages gastric mucosa, causing severe pain and potential gastrointestinal hemorrhage.",
+    "recommendation": "Substitute NSAID painkiller with non-interacting analgesic under medical supervision."
+  },
+  {
+    "salts": ["clopidogrel", "pantoprazole"],
+    "severity": "MODERATE_RISK",
+    "title": "Reduced Antiplatelet Efficacy",
+    "description": "Pantoprazole may slightly inhibit CYP2C19 bioactivation of Clopidogrel, potentially dampening cardiovascular protection.",
+    "recommendation": "Discuss timing separation or switching to an alternative acid reducer if clinically indicated."
+  },
+  {
+    "salts": ["telmisartan", "ibuprofen"],
+    "severity": "MODERATE_RISK",
+    "title": "Attenuated Antihypertensive Effect & Nephrotoxicity",
+    "description": "NSAIDs like Ibuprofen reduce renal prostaglandin synthesis, blunting the blood pressure lowering effect of Telmisartan and raising acute kidney injury risk.",
+    "recommendation": "Monitor blood pressure and renal function closely if pain relief is required."
+  },
+  {
+    "salts": ["metformin", "contrast agent"],
+    "severity": "HIGH_RISK",
+    "title": "Risk of Lactic Acidosis",
+    "description": "Metformin combined with IV iodinated contrast can trigger acute renal failure leading to dangerous systemic lactic acidosis.",
+    "recommendation": "Withhold Metformin 48 hours prior to diagnostic contrast imaging."
+  },
+  {
+    "salts": ["amoxicillin", "methotrexate"],
+    "severity": "MODERATE_RISK",
+    "title": "Elevated Methotrexate Toxicity",
+    "description": "Penicillins like Amoxicillin reduce renal clearance of Methotrexate, elevating blood levels and toxicity risks.",
+    "recommendation": "Monitor serum methotrexate and blood cell counts closely."
+  }
+]
