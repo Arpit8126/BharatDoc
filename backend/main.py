@@ -1,7 +1,6 @@
 import os
 import base64
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
-from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
@@ -262,16 +261,6 @@ async def voice_stt(file: UploadFile = File(...), lang: Optional[str] = Form("hi
     res = transcribe_indic_speech(audio_bytes=content, filename=file.filename or "audio.wav", lang=lang or "hi")
     return res
 
-# Mount frontend build if available (serves entire React frontend directly)
-dist_path = os.path.join(os.path.dirname(__file__), "dist")
-if not os.path.exists(dist_path):
-    dist_path = os.path.join(os.path.dirname(__file__), "..", "frontend", "dist")
-
-if os.path.exists(dist_path):
-    app.mount("/", StaticFiles(directory=dist_path, html=True), name="frontend")
-
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
-
-
