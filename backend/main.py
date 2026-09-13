@@ -9,12 +9,14 @@ from cv_engine import preprocess_prescription_image
 from parser import parse_prescription_with_gemini, parse_lab_report_with_gemini
 from ddi_engine import evaluate_ddi_conflicts, resolve_salts
 from fhir_exporter import generate_fhir_r4_bundle
+from gnani_voice import synthesize_indic_speech, transcribe_indic_speech, is_gnani_configured, GNANI_LANG_MAP
 
 app = FastAPI(
     title="BharatDoc Clinical Intelligence API",
-    description="Engine for paper prescription OCR normalization, bounding box grounding, ABDM FHIR R4 exporting, and DDI safety checks.",
-    version="1.0.0"
+    description="Engine for paper prescription OCR normalization, bounding box grounding, ABDM FHIR R4 exporting, DDI safety checks, and Indic Voice Engine.",
+    version="1.1.0"
 )
+
 
 # Enable CORS for Next.js frontend
 app.add_middleware(
@@ -38,6 +40,12 @@ class ChatRequest(BaseModel):
     query: str
     prescription_data: Optional[Dict[str, Any]] = None
     chat_history: Optional[List[Dict[str, str]]] = []
+
+class TTSRequest(BaseModel):
+    text: str
+    lang: Optional[str] = "hi"
+    gender: Optional[str] = "female"
+
 
 @app.get("/")
 def read_root():
@@ -181,7 +189,7 @@ async def chat_grounded(req: ChatRequest):
 
     # Strict system prompt enforcing domain scope and medical accuracy
     system_prompt = f"""
-You are BharatDoc AI Assistant, a compassionate clinical pharmacologist and medical companion for Indian healthcare patients.
+You are BharatDoc Clinical Assistant, a compassionate clinical pharmacologist and medical companion for Indian healthcare patients.
 
 ACTIVE PRESCRIPTION GROUNDING CONTEXT:
 {json.dumps(req.prescription_data or {}, indent=2)}
@@ -223,6 +231,37 @@ STRICT GUARDRAIL & COMPLIANCE RULES:
 
     return {"reply": f"Based on your prescription document from {req.prescription_data.get('doctor_name', 'your doctor') if req.prescription_data else 'your scan'}, please follow the exact timing and dosage instructions listed on each pill card."}
 
+@app.get("/api/voice/status")
+def voice_status():
+    """
+    Returns Voice Engine configuration status and supported Indic languages.
+    """
+    return {
+        "gnani_configured": is_gnani_configured(),
+        "engine": "Indic Voice Engine",
+        "supported_languages": list(GNANI_LANG_MAP.keys()),
+        "fallback_engine": "Web Speech API"
+    }
+
+
+@app.post("/api/voice/tts")
+async def voice_tts(req: TTSRequest):
+    """
+    Synthesizes Indic speech using Gnani.ai Vach TTS engine.
+    """
+    res = synthesize_indic_speech(text=req.text, lang=req.lang or "hi", gender=req.gender or "female")
+    return res
+
+@app.post("/api/voice/stt")
+async def voice_stt(file: UploadFile = File(...), lang: Optional[str] = Form("hi")):
+    """
+    Transcribes Indic spoken audio into text using Gnani.ai Vach ASR engine.
+    """
+    content = await file.read()
+    res = transcribe_indic_speech(audio_bytes=content, filename=file.filename or "audio.wav", lang=lang or "hi")
+    return res
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+

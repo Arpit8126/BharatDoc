@@ -5,7 +5,8 @@ import {
   FileCode, Globe, ChevronDown, LogOut, Check, RefreshCw,
   HelpCircle, Send, AlertOctagon, AlertTriangle, ShieldCheck, Pill,
   Plus, Trash2, Activity, Download, Copy, Database, CloudUpload,
-  FileText, Sparkles, ArrowRight, X, MessageSquare, FlaskConical
+  FileText, Sparkles, ArrowRight, X, MessageSquare, FlaskConical,
+  Mic, MicOff, Radio, VolumeX
 } from 'lucide-react';
 import {
   ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip,
@@ -13,8 +14,12 @@ import {
 } from 'recharts';
 import { LANGUAGES, LangCode, useTranslation } from '../lib/i18n';
 import { savePrescriptionToSupabase, saveLabReportToSupabase, fetchLabReportsFromSupabase } from '../lib/supabase';
+import { playIndicSpeech, stopAllSpeech, IndicVoiceRecorder } from '../lib/voice';
+import { ClinicalProgressBar } from '../components/ClinicalProgressBar';
 
 const BACKEND = 'http://localhost:8000';
+
+
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 interface Medicine {
@@ -68,7 +73,11 @@ export default function Dashboard({ lang, setLang, user, setUser }: Props) {
   const [activeTab, setActiveTab] = useState<Tab>('audit');
   const [langOpen, setLangOpen] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [uploadStage, setUploadStage] = useState('Initializing scan…');
+
   const [hasData, setHasData] = useState(false);
+
 
   // Clinical state — all null until upload
   const [prescription, setPrescription] = useState<PrescriptionData | null>(null);
@@ -102,6 +111,8 @@ export default function Dashboard({ lang, setLang, user, setUser }: Props) {
   const [multiPrescriptions, setMultiPrescriptions] = useState<any[]>([]);
   const [multiDdiData, setMultiDdiData] = useState<any>(null);
   const [multiUploading, setMultiUploading] = useState(false);
+  const [multiUploadProgress, setMultiUploadProgress] = useState(0);
+  const [multiUploadStage, setMultiUploadStage] = useState('Initializing multi-prescription scan…');
 
   // Dedicated DDI Chatbot state & Modal
   const [isDdiChatOpen, setIsDdiChatOpen] = useState(false);
@@ -113,6 +124,9 @@ export default function Dashboard({ lang, setLang, user, setUser }: Props) {
   // Single Lab Report Analysis tab state
   const [labReportData, setLabReportData] = useState<any>(null);
   const [labUploading, setLabUploading] = useState(false);
+  const [labUploadProgress, setLabUploadProgress] = useState(0);
+  const [labUploadStage, setLabUploadStage] = useState('Initializing lab analysis…');
+
   const [isLabChatOpen, setIsLabChatOpen] = useState(false);
   const [labChatMsgs, setLabChatMsgs] = useState<{ role: 'user' | 'bot'; text: string }[]>([]);
   const [labChatInput, setLabChatInput] = useState('');
@@ -227,8 +241,13 @@ export default function Dashboard({ lang, setLang, user, setUser }: Props) {
     );
   };
 
-  // Audio
+  // Audio & Voice Engine
   const [speaking, setSpeaking] = useState(false);
+  const [isRecordingVoice, setIsRecordingVoice] = useState(false);
+  const [activeRecordingChat, setActiveRecordingChat] = useState<string | null>(null);
+  const [playingMsgIndex, setPlayingMsgIndex] = useState<number | null>(null);
+  const voiceRecorderRef = useRef<IndicVoiceRecorder>(new IndicVoiceRecorder());
+
 
   // Lab
   const [activeMetric, setActiveMetric] = useState<'hba1c' | 'glucose' | 'creatinine'>('hba1c');
@@ -308,25 +327,54 @@ export default function Dashboard({ lang, setLang, user, setUser }: Props) {
     }]);
   };
 
-  // ── Voice Briefing ──────────────────────────────────────────────────────────
-  const handleVoice = () => {
+  // ── Voice Briefing (Indic Voice Engine + Browser fallback) ─────────────
+  const handleVoice = async () => {
     if (!prescription) return;
-    if (speaking) { window.speechSynthesis.cancel(); setSpeaking(false); return; }
+    if (speaking) {
+      stopAllSpeech();
+      setSpeaking(false);
+      return;
+    }
     const text = lang === 'hi'
       ? `नमस्ते। आपकी पर्ची में ${medicines.length} दवाएं हैं। ${medicines.map(m => m.instructions_hi || m.brand_name).join('. ')}`
       : `Your prescription from ${prescription.doctor_name} has ${medicines.length} medicine${medicines.length !== 1 ? 's' : ''}. ${medicines.map(m => `${m.brand_name}: take ${m.timing}`).join('. ')}`;
-    const u = new SpeechSynthesisUtterance(text);
-    u.lang = LANGUAGES.find(l => l.code === lang)?.speechCode ?? 'en-IN';
-    u.rate = 0.88;
-    u.onend = () => setSpeaking(false);
-    u.onerror = () => setSpeaking(false);
+
     setSpeaking(true);
-    window.speechSynthesis.speak(u);
+    await playIndicSpeech({
+      text,
+      lang,
+      gender: 'female',
+      onStart: () => setSpeaking(true),
+      onEnd: () => setSpeaking(false),
+      onError: () => setSpeaking(false),
+    });
   };
+
+
+
+  const playBotMessageAudio = async (text: string, index: number) => {
+    if (playingMsgIndex === index) {
+      stopAllSpeech();
+      setPlayingMsgIndex(null);
+      return;
+    }
+    setPlayingMsgIndex(index);
+    await playIndicSpeech({
+      text,
+      lang,
+      gender: 'female',
+      onStart: () => setPlayingMsgIndex(index),
+      onEnd: () => setPlayingMsgIndex(null),
+      onError: () => setPlayingMsgIndex(null),
+    });
+  };
+
 
   // ── Upload ──────────────────────────────────────────────────────────────────
   const handleUpload = async (file: File) => {
     setUploading(true);
+    setUploadProgress(12);
+    setUploadStage('Step 1/4: OpenCV CLAHE contrast enhancement & image dewarping…');
     setHasData(false);
     setPrescription(null);
     setMedicines([]);
@@ -335,6 +383,24 @@ export default function Dashboard({ lang, setLang, user, setUser }: Props) {
     setFhirBundle(null);
     setChatMsgs([]);
     setSelectedMed(-1);
+
+    const timer = setInterval(() => {
+      setUploadProgress(prev => {
+        if (prev < 38) {
+          setUploadStage('Step 2/4: Optical Character Recognition & 2D Bounding Boxes…');
+          return prev + 8;
+        } else if (prev < 72) {
+          setUploadStage('Step 3/4: Pharmacovigilance DDI & Active salt resolution…');
+          return prev + 6;
+        } else if (prev < 90) {
+          setUploadStage('Step 4/4: Generating ABDM HL7 FHIR R4 Bundle…');
+          return prev + 3;
+        } else if (prev < 96) {
+          return prev + 1;
+        }
+        return prev;
+      });
+    }, 280);
 
     const fd = new FormData();
     fd.append('file', file);
@@ -347,6 +413,9 @@ export default function Dashboard({ lang, setLang, user, setUser }: Props) {
 
       if (!res.ok) throw new Error(`Server error: ${res.status}`);
       const d = await res.json();
+
+      setUploadProgress(100);
+      setUploadStage('Complete: Prescription normalized & verified');
 
       const pData = d.prescription ?? null;
       const meds = pData?.medicines ?? [];
@@ -403,11 +472,15 @@ export default function Dashboard({ lang, setLang, user, setUser }: Props) {
         text: `❌ Could not process this image: ${err.message}. Make sure the backend server is running and upload a clear prescription photo.`,
       }]);
     } finally {
-      setUploading(false);
+      clearInterval(timer);
+      setTimeout(() => {
+        setUploading(false);
+      }, 350);
     }
   };
 
-  // ── Grounded AI Chat ────────────────────────────────────────────────────────
+
+  // ── Grounded Clinical Chat ────────────────────────────────────────────────────────
   const handleChat = async (q?: string) => {
     const query = (q || chatInput).trim();
     if (!query || !hasData) return;
@@ -448,9 +521,26 @@ export default function Dashboard({ lang, setLang, user, setUser }: Props) {
   const handleMultiUpload = async (files: FileList | File[]) => {
     if (!files || files.length === 0) return;
     setMultiUploading(true);
+    setMultiUploadProgress(15);
+    setMultiUploadStage(`Step 1/3: Reading & normalising ${files.length} prescription slips…`);
     setMultiPrescriptions([]);
     setMultiDdiData(null);
     setDdiChatMsgs([]);
+
+    const timer = setInterval(() => {
+      setMultiUploadProgress(prev => {
+        if (prev < 45) {
+          setMultiUploadStage('Step 2/3: Cross-analyzing multi-specialist generic molecules…');
+          return prev + 10;
+        } else if (prev < 85) {
+          setMultiUploadStage('Step 3/3: Evaluating cross-prescription DDI safety matrix…');
+          return prev + 6;
+        } else if (prev < 96) {
+          return prev + 1;
+        }
+        return prev;
+      });
+    }, 300);
 
     const fd = new FormData();
     Array.from(files).forEach(file => fd.append('files', file));
@@ -464,6 +554,9 @@ export default function Dashboard({ lang, setLang, user, setUser }: Props) {
       if (!res.ok) throw new Error(`Server error: ${res.status}`);
       const data = await res.json();
 
+      setMultiUploadProgress(100);
+      setMultiUploadStage('Complete: Multi-prescription safety radar computed');
+
       setMultiPrescriptions(data.prescriptions || []);
       setMultiDdiData(data.ddi_safety || null);
 
@@ -474,11 +567,12 @@ export default function Dashboard({ lang, setLang, user, setUser }: Props) {
     } catch (e) {
       console.error('[MultiUpload Error]', e);
     } finally {
-      setMultiUploading(false);
+      clearInterval(timer);
+      setTimeout(() => setMultiUploading(false), 350);
     }
   };
 
-  // ── Dedicated DDI Poly-Pharmacy AI Assistant ────────────────────────────────
+  // ── Dedicated DDI Poly-Pharmacy Clinical Assistant ────────────────────────────────
   const handleDdiChat = async (q?: string) => {
     const query = (q || ddiChatInput).trim();
     if (!query || multiPrescriptions.length === 0) return;
@@ -529,8 +623,25 @@ export default function Dashboard({ lang, setLang, user, setUser }: Props) {
   // ── Single Lab Report Upload & Analysis ─────────────────────────────────────
   const handleLabReportUpload = async (file: File) => {
     setLabUploading(true);
+    setLabUploadProgress(15);
+    setLabUploadStage('Step 1/3: Reading test parameters & bio-reference ranges…');
     setLabReportData(null);
     setLabChatMsgs([]);
+
+    const timer = setInterval(() => {
+      setLabUploadProgress(prev => {
+        if (prev < 48) {
+          setLabUploadStage('Step 2/3: Classifying clinical risks & plain-language terms…');
+          return prev + 10;
+        } else if (prev < 88) {
+          setLabUploadStage('Step 3/3: Generating ABDM FHIR R4 DiagnosticReport…');
+          return prev + 6;
+        } else if (prev < 96) {
+          return prev + 1;
+        }
+        return prev;
+      });
+    }, 280);
 
     const fd = new FormData();
     fd.append('file', file);
@@ -544,6 +655,9 @@ export default function Dashboard({ lang, setLang, user, setUser }: Props) {
       if (!res.ok) throw new Error(`Server error: ${res.status}`);
       const data = await res.json();
       const labReport = data.lab_report;
+
+      setLabUploadProgress(100);
+      setLabUploadStage('Complete: Diagnostic report analyzed');
 
       setLabReportData(labReport);
       if (data.fhir_bundle) {
@@ -571,11 +685,13 @@ export default function Dashboard({ lang, setLang, user, setUser }: Props) {
     } catch (e) {
       console.error('[LabUpload Error]', e);
     } finally {
-      setLabUploading(false);
+      clearInterval(timer);
+      setTimeout(() => setLabUploading(false), 350);
     }
   };
 
-  // ── Dedicated Lab Report AI Assistant Chat Handler ──────────────────────────
+
+  // ── Dedicated Lab Report Clinical Assistant Chat Handler ──────────────────────────
   const handleLabChat = async (q?: string) => {
     const query = (q || labChatInput).trim();
     if (!query || !labReportData) return;
@@ -612,7 +728,7 @@ export default function Dashboard({ lang, setLang, user, setUser }: Props) {
     }
   };
 
-  // ── Dedicated Health Trends AI Assistant Chat Handler ────────────────────────
+  // ── Dedicated Health Trends Clinical Assistant Chat Handler ────────────────────────
   const handleTrendChat = async (q?: string) => {
     const query = (q || trendChatInput).trim();
     if (!query || healthTrendHistory.length === 0) return;
@@ -651,6 +767,71 @@ export default function Dashboard({ lang, setLang, user, setUser }: Props) {
       }]);
     } finally {
       setTrendChatLoading(false);
+    }
+  };
+
+  // ── Vernacular Voice Assistant Input (Speech-to-Text & Instant Submit) ─────
+  const handleToggleVoiceInput = async (target: 'main' | 'ddi' | 'lab' | 'trend' = 'main') => {
+    if (isRecordingVoice) {
+      setIsRecordingVoice(false);
+      setActiveRecordingChat(null);
+      const transcribed = await voiceRecorderRef.current.stopAndTranscribe(lang);
+      if (transcribed && transcribed.trim()) {
+        const text = transcribed.trim();
+        if (target === 'main') {
+          setChatInput(text);
+          handleChat(text);
+        } else if (target === 'ddi') {
+          setDdiChatInput(text);
+          handleDdiChat(text);
+        } else if (target === 'lab') {
+          setLabChatInput(text);
+          handleLabChat(text);
+        } else if (target === 'trend') {
+          setTrendChatInput(text);
+          handleTrendChat(text);
+        }
+      }
+    } else {
+      setIsRecordingVoice(true);
+      setActiveRecordingChat(target);
+
+      const ok = await voiceRecorderRef.current.start(
+        lang,
+        // onInterim: Stream spoken words live into the active input box
+        (liveText: string) => {
+          if (target === 'main') setChatInput(liveText);
+          else if (target === 'ddi') setDdiChatInput(liveText);
+          else if (target === 'lab') setLabChatInput(liveText);
+          else if (target === 'trend') setTrendChatInput(liveText);
+        },
+        // onAutoFinal: Auto-submit to clinical assistant when speech ends
+        (finalText: string) => {
+          setIsRecordingVoice(false);
+          setActiveRecordingChat(null);
+          if (finalText && finalText.trim()) {
+            const query = finalText.trim();
+            if (target === 'main') {
+              setChatInput(query);
+              handleChat(query);
+            } else if (target === 'ddi') {
+              setDdiChatInput(query);
+              handleDdiChat(query);
+            } else if (target === 'lab') {
+              setLabChatInput(query);
+              handleLabChat(query);
+            } else if (target === 'trend') {
+              setTrendChatInput(query);
+              handleTrendChat(query);
+            }
+          }
+        }
+      );
+
+      if (!ok) {
+        setIsRecordingVoice(false);
+        setActiveRecordingChat(null);
+      }
     }
   };
 
@@ -847,14 +1028,12 @@ export default function Dashboard({ lang, setLang, user, setUser }: Props) {
 
                 <div className="relative w-full bg-[#fafafa] rounded-2xl border border-[#e7e5e4] flex items-center justify-center p-3 overflow-hidden shrink-0">
                   {uploading ? (
-                    <div className="flex flex-col items-center gap-3 p-8 min-h-[260px] justify-center">
-                      <RefreshCw className="w-8 h-8 text-[#292524] animate-spin" />
-                      <p className="text-xs text-[#777169] text-center font-medium">
-                        Running OpenCV CLAHE normalization & Gemini vision…
-                      </p>
-                      <p className="text-[11px] text-[#a8a29e] text-center">
-                        Extracting medicines with pixel-accurate bounding boxes
-                      </p>
+                    <div className="w-full flex items-center justify-center p-4 min-h-[280px]">
+                      <ClinicalProgressBar
+                        progress={uploadProgress}
+                        stage={uploadStage}
+                        subtext="Normalizing contrast with OpenCV CLAHE & extracting medicine bounding boxes"
+                      />
                     </div>
                   ) : processedImg ? (
                     <div className="relative inline-flex items-center justify-center max-w-full">
@@ -1062,14 +1241,14 @@ export default function Dashboard({ lang, setLang, user, setUser }: Props) {
                       <div className="w-8 h-8 rounded-xl bg-[#292524] text-white flex items-center justify-center shadow-xs">
                         <MessageSquare className="w-4 h-4" />
                       </div>
-                      <h4 className="font-serif text-base font-semibold text-[#0c0a09]">Ask Doubts with AI Assistant</h4>
+                      <h4 className="font-serif text-base font-semibold text-[#0c0a09]">Ask Doubts with Clinical Assistant</h4>
                     </div>
                     <span className="text-[10px] badge-neutral px-2.5 py-0.5 rounded-full font-semibold inline-flex items-center gap-1">
-                      <span className="dot-normal" /> Grounded AI
+                      <span className="dot-normal" /> Grounded Clinical
                     </span>
                   </div>
                   <p className="text-xs text-[#4e4e4e] leading-relaxed">
-                    Have questions about your prescription, medicine dosage, timing, side effects, or diet precautions (Parhez)? Ask our AI assistant anytime.
+                    Have questions about your prescription, medicine dosage, timing, side effects, or diet precautions (Parhez)? Ask our clinical assistant anytime.
                   </p>
                   <button
                     onClick={() => setIsChatOpen(true)}
@@ -1125,12 +1304,12 @@ export default function Dashboard({ lang, setLang, user, setUser }: Props) {
 
             {/* Loading State during batch upload */}
             {multiUploading && (
-              <div className="bg-white rounded-3xl border border-[#e7e5e4] p-12 text-center space-y-4 shadow-xs">
-                <RefreshCw className="w-10 h-10 text-[#292524] animate-spin mx-auto" />
-                <div>
-                  <h3 className="font-serif text-lg text-[#0c0a09]">Analyzing Multiple Prescription Slips…</h3>
-                  <p className="text-xs text-[#777169] mt-1">Running Gemini Vision OCR across all uploaded slips and evaluating cross-prescription DDI matrix.</p>
-                </div>
+              <div className="py-6 max-w-xl mx-auto">
+                <ClinicalProgressBar
+                  progress={multiUploadProgress}
+                  stage={multiUploadStage}
+                  subtext="Reading multiple physician slips & evaluating cross-prescription DDI safety matrix"
+                />
               </div>
             )}
 
@@ -1270,21 +1449,21 @@ export default function Dashboard({ lang, setLang, user, setUser }: Props) {
                   </div>
                 </div>
 
-                {/* Poly-Pharmacy AI Assistant Launcher Card */}
+                {/* Poly-Pharmacy Clinical Assistant Launcher Card */}
                 <div className="bg-gradient-to-br from-emerald-50/90 via-teal-50/40 to-white border border-emerald-200/90 rounded-3xl p-5 shadow-xs space-y-3.5">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
                       <div className="w-8 h-8 rounded-xl bg-emerald-600 text-white flex items-center justify-center shadow-xs">
                         <MessageSquare className="w-4 h-4" />
                       </div>
-                      <h4 className="font-serif text-base font-semibold text-[#0c0a09]">Poly-Pharmacy AI Assistant</h4>
+                      <h4 className="font-serif text-base font-semibold text-[#0c0a09]">Poly-Pharmacy Clinical Assistant</h4>
                     </div>
                     <span className="text-[10px] bg-emerald-100 text-emerald-800 border border-emerald-300 px-2.5 py-0.5 rounded-full font-semibold">
                       Cross-Prescription Grounding
                     </span>
                   </div>
                   <p className="text-xs text-[#4e4e4e] leading-relaxed">
-                    Have questions about combining medicines from all {multiPrescriptions.length} uploaded doctor slips? Ask our poly-pharmacy AI assistant anytime.
+                    Have questions about combining medicines from all {multiPrescriptions.length} uploaded doctor slips? Ask our clinical assistant anytime.
                   </p>
                   <button
                     onClick={() => setIsDdiChatOpen(true)}
@@ -1338,12 +1517,12 @@ export default function Dashboard({ lang, setLang, user, setUser }: Props) {
 
             {/* Loading state during report upload */}
             {labUploading && (
-              <div className="bg-white rounded-3xl border border-[#e7e5e4] p-12 text-center space-y-4 shadow-xs">
-                <RefreshCw className="w-10 h-10 text-[#292524] animate-spin mx-auto" />
-                <div>
-                  <h3 className="font-serif text-lg text-[#0c0a09]">Analyzing Diagnostic Lab Report…</h3>
-                  <p className="text-xs text-[#777169] mt-1">Extracting test parameters, bio-reference ranges, plain-language explanations, and risk categories.</p>
-                </div>
+              <div className="py-6 max-w-xl mx-auto">
+                <ClinicalProgressBar
+                  progress={labUploadProgress}
+                  stage={labUploadStage}
+                  subtext="Extracting diagnostic parameters, bio-reference ranges, and clinical risk levels"
+                />
               </div>
             )}
 
@@ -1453,21 +1632,21 @@ export default function Dashboard({ lang, setLang, user, setUser }: Props) {
                   </div>
                 </div>
 
-                {/* Lab Report AI Assistant Launcher Card */}
+                {/* Lab Report Clinical Assistant Launcher Card */}
                 <div className="bg-gradient-to-br from-emerald-50/90 via-teal-50/40 to-white border border-emerald-200/90 rounded-3xl p-5 shadow-xs space-y-3.5">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
                       <div className="w-8 h-8 rounded-xl bg-emerald-600 text-white flex items-center justify-center shadow-xs">
                         <MessageSquare className="w-4 h-4" />
                       </div>
-                      <h4 className="font-serif text-base font-semibold text-[#0c0a09]">Lab Report AI Assistant</h4>
+                      <h4 className="font-serif text-base font-semibold text-[#0c0a09]">Lab Report Clinical Assistant</h4>
                     </div>
                     <span className="text-[10px] bg-emerald-100 text-emerald-800 border border-emerald-300 px-2.5 py-0.5 rounded-full font-semibold">
                       Lab Grounding
                     </span>
                   </div>
                   <p className="text-xs text-[#4e4e4e] leading-relaxed">
-                    Have questions about specific values or medical terms on this report? Ask our diagnostic AI assistant anytime.
+                    Have questions about specific values or medical terms on this report? Ask our diagnostic clinical assistant anytime.
                   </p>
                   <button
                     onClick={() => setIsLabChatOpen(true)}
@@ -1733,21 +1912,21 @@ export default function Dashboard({ lang, setLang, user, setUser }: Props) {
                     </div>
                   </div>
 
-                  {/* Health Trends AI Assistant Launcher Card */}
+                  {/* Health Trends Clinical Assistant Launcher Card */}
                   <div className="bg-gradient-to-br from-emerald-50/90 via-teal-50/40 to-white border border-emerald-200/90 rounded-3xl p-5 shadow-xs space-y-3.5">
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
                         <div className="w-8 h-8 rounded-xl bg-emerald-600 text-white flex items-center justify-center shadow-xs">
                           <MessageSquare className="w-4 h-4" />
                         </div>
-                        <h4 className="font-serif text-base font-semibold text-[#0c0a09]">Health Trends AI Assistant</h4>
+                        <h4 className="font-serif text-base font-semibold text-[#0c0a09]">Health Trends Clinical Assistant</h4>
                       </div>
                       <span className="text-[10px] bg-emerald-100 text-emerald-800 border border-emerald-300 px-2.5 py-0.5 rounded-full font-semibold">
                         Telemetry Grounding
                       </span>
                     </div>
                     <p className="text-xs text-[#4e4e4e] leading-relaxed">
-                      Have questions about your health progress over time? Ask our telemetry AI assistant anytime.
+                      Have questions about your health progress over time? Ask our clinical assistant anytime.
                     </p>
                     <button
                       onClick={() => setIsTrendChatOpen(true)}
@@ -1934,7 +2113,7 @@ export default function Dashboard({ lang, setLang, user, setUser }: Props) {
                   </div>
                   <h4 className="font-serif text-sm sm:text-base font-normal text-[#0c0a09]">Ask any medical doubt about your prescription</h4>
                   <p className="text-[11px] sm:text-xs text-[#777169] max-w-sm px-2">
-                    Our AI assistant is grounded strictly in your uploaded prescription document and medical pharmacology knowledge.
+                    Our clinical assistant is grounded strictly in your uploaded prescription document and medical pharmacology knowledge.
                   </p>
                 </div>
               ) : (
@@ -1948,7 +2127,27 @@ export default function Dashboard({ lang, setLang, user, setUser }: Props) {
                     }`}
                   >
                     {m.role === 'bot' ? (
-                      renderFormattedMessage(m.text)
+                      <div>
+                        {renderFormattedMessage(m.text)}
+                        <button
+                          type="button"
+                          onClick={() => playBotMessageAudio(m.text, i)}
+                          className="mt-2.5 pt-2 border-t border-[#f0efed] text-[11px] font-medium text-[#777169] hover:text-[#0c0a09] flex items-center gap-1.5 transition-colors cursor-pointer"
+                          title="Listen to this explanation in Indic voice"
+                        >
+                          {playingMsgIndex === i ? (
+                            <>
+                              <Pause className="w-3 h-3 text-amber-600 animate-pulse" />
+                              <span className="text-amber-600 font-semibold">Playing voice audio…</span>
+                            </>
+                          ) : (
+                            <>
+                              <Volume2 className="w-3 h-3 text-[#777169]" />
+                              <span>Listen (Indic Voice)</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
                     ) : (
                       <p className="text-xs sm:text-sm font-medium">{m.text}</p>
                     )}
@@ -1957,10 +2156,11 @@ export default function Dashboard({ lang, setLang, user, setUser }: Props) {
               )}
 
               {chatLoading && (
-                <div className="p-3 sm:p-4 rounded-2xl bg-white border border-[#e7e5e4] text-xs text-[#777169] flex items-center gap-2 max-w-max shadow-xs">
-                  <RefreshCw className="w-4 h-4 text-[#292524] animate-spin" />
-                  <span>Consulting clinical knowledge base…</span>
-                </div>
+                <ClinicalProgressBar
+                  variant="chat"
+                  stage="Consulting clinical knowledge base…"
+                  subtext="Grounding pharmacological recommendations against prescription active molecules…"
+                />
               )}
 
               {/* Scroll anchor target */}
@@ -1988,10 +2188,31 @@ export default function Dashboard({ lang, setLang, user, setUser }: Props) {
                 <input
                   value={chatInput}
                   onChange={e => setChatInput(e.target.value)}
-                  placeholder={hasData ? 'Ask any doubt about prescription…' : 'Upload prescription first…'}
+                  placeholder={
+                    isRecordingVoice && activeRecordingChat === 'main'
+                      ? '🔴 Listening... speak in your language'
+                      : (hasData ? 'Ask any doubt about prescription…' : 'Upload prescription first…')
+                  }
                   disabled={!hasData || chatLoading}
-                  className="flex-1 px-3.5 py-2.5 sm:px-4 sm:py-3 rounded-full bg-[#fafafa] border border-[#e7e5e4] text-xs sm:text-sm text-[#0c0a09] placeholder-[#a8a29e] focus:outline-none focus:border-[#292524] transition-all disabled:opacity-50 min-w-0"
+                  className={`flex-1 px-3.5 py-2.5 sm:px-4 sm:py-3 rounded-full border text-xs sm:text-sm text-[#0c0a09] placeholder-[#a8a29e] focus:outline-none transition-all disabled:opacity-50 min-w-0 ${
+                    isRecordingVoice && activeRecordingChat === 'main'
+                      ? 'bg-red-50/70 border-red-300 animate-pulse'
+                      : 'bg-[#fafafa] border-[#e7e5e4] focus:border-[#292524]'
+                  }`}
                 />
+                <button
+                  type="button"
+                  onClick={() => handleToggleVoiceInput('main')}
+                  disabled={!hasData || chatLoading}
+                  title={isRecordingVoice && activeRecordingChat === 'main' ? "Stop recording and transcribe" : "Speak voice query"}
+                  className={`p-2.5 sm:p-3 rounded-full transition-all flex items-center justify-center shrink-0 cursor-pointer disabled:opacity-40 ${
+                    isRecordingVoice && activeRecordingChat === 'main'
+                      ? 'bg-red-600 text-white animate-pulse shadow-md'
+                      : 'bg-[#f0efed] hover:bg-[#e7e5e4] text-[#292524]'
+                  }`}
+                >
+                  {isRecordingVoice && activeRecordingChat === 'main' ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
+                </button>
                 <button
                   type="submit"
                   disabled={!hasData || chatLoading || !chatInput.trim()}
@@ -2002,6 +2223,7 @@ export default function Dashboard({ lang, setLang, user, setUser }: Props) {
                 </button>
               </form>
             </div>
+
 
           </div>
         </div>
@@ -2022,7 +2244,7 @@ export default function Dashboard({ lang, setLang, user, setUser }: Props) {
                 </div>
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap">
-                    <h3 className="font-serif text-sm sm:text-lg font-medium sm:font-normal text-[#0c0a09] truncate">Poly-Pharmacy AI Assistant</h3>
+                    <h3 className="font-serif text-sm sm:text-lg font-medium sm:font-normal text-[#0c0a09] truncate">Poly-Pharmacy Clinical Assistant</h3>
                     <span className="text-[9px] sm:text-[10px] font-medium text-[#0f5132] bg-[#edf7f2] border border-[#b7eb8f] px-2 py-0.5 sm:px-2.5 sm:py-0.5 rounded-full shrink-0">
                       Cross-Prescription Grounding
                     </span>
@@ -2063,10 +2285,11 @@ export default function Dashboard({ lang, setLang, user, setUser }: Props) {
               )}
 
               {ddiChatLoading && (
-                <div className="p-3 sm:p-4 rounded-2xl bg-white border border-[#e7e5e4] text-xs text-[#777169] flex items-center gap-2 max-w-max shadow-xs">
-                  <RefreshCw className="w-4 h-4 text-[#292524] animate-spin" />
-                  <span>Evaluating combined pharmacovigilance safety…</span>
-                </div>
+                <ClinicalProgressBar
+                  variant="chat"
+                  stage="Evaluating poly-pharmacy safety…"
+                  subtext="Cross-analyzing multi-specialist prescription interactions…"
+                />
               )}
 
               <div ref={ddiChatEndRef} />
@@ -2095,10 +2318,31 @@ export default function Dashboard({ lang, setLang, user, setUser }: Props) {
                 <input
                   value={ddiChatInput}
                   onChange={e => setDdiChatInput(e.target.value)}
-                  placeholder="Ask any doubt about combined prescriptions…"
+                  placeholder={
+                    isRecordingVoice && activeRecordingChat === 'ddi'
+                      ? '🔴 Listening... speak in your language (Indic Voice Engine)'
+                      : 'Ask any doubt about combined prescriptions…'
+                  }
                   disabled={ddiChatLoading}
-                  className="flex-1 px-3.5 py-2.5 sm:px-4 sm:py-3 rounded-full bg-[#fafafa] border border-[#e7e5e4] text-xs sm:text-sm text-[#0c0a09] placeholder-[#a8a29e] focus:outline-none focus:border-[#292524] transition-all disabled:opacity-50 min-w-0"
+                  className={`flex-1 px-3.5 py-2.5 sm:px-4 sm:py-3 rounded-full border text-xs sm:text-sm text-[#0c0a09] placeholder-[#a8a29e] focus:outline-none transition-all disabled:opacity-50 min-w-0 ${
+                    isRecordingVoice && activeRecordingChat === 'ddi'
+                      ? 'bg-red-50/70 border-red-300 animate-pulse'
+                      : 'bg-[#fafafa] border-[#e7e5e4] focus:border-[#292524]'
+                  }`}
                 />
+                <button
+                  type="button"
+                  onClick={() => handleToggleVoiceInput('ddi')}
+                  disabled={ddiChatLoading}
+                  title={isRecordingVoice && activeRecordingChat === 'ddi' ? "Stop recording and transcribe" : "Speak voice query"}
+                  className={`p-2.5 sm:p-3 rounded-full transition-all flex items-center justify-center shrink-0 cursor-pointer disabled:opacity-40 ${
+                    isRecordingVoice && activeRecordingChat === 'ddi'
+                      ? 'bg-red-600 text-white animate-pulse shadow-md'
+                      : 'bg-[#f0efed] hover:bg-[#e7e5e4] text-[#292524]'
+                  }`}
+                >
+                  {isRecordingVoice && activeRecordingChat === 'ddi' ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
+                </button>
                 <button
                   type="submit"
                   disabled={ddiChatLoading || !ddiChatInput.trim()}
@@ -2115,7 +2359,7 @@ export default function Dashboard({ lang, setLang, user, setUser }: Props) {
       )}
 
       {/* ═══════════════════════════════════════════════════════════════════ */}
-      {/* Lab Report AI Chatbot Modal Overlay */}
+      {/* Lab Report Clinical Chatbot Modal Overlay */}
       {/* ═══════════════════════════════════════════════════════════════════ */}
       {isLabChatOpen && (
         <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-6 bg-black/60 backdrop-blur-sm transition-all animate-fadeIn">
@@ -2129,7 +2373,7 @@ export default function Dashboard({ lang, setLang, user, setUser }: Props) {
                 </div>
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap">
-                    <h3 className="font-serif text-sm sm:text-lg font-medium sm:font-normal text-[#0c0a09] truncate">Lab Report AI Assistant</h3>
+                    <h3 className="font-serif text-sm sm:text-lg font-medium sm:font-normal text-[#0c0a09] truncate">Lab Report Clinical Assistant</h3>
                     <span className="text-[9px] sm:text-[10px] font-medium text-[#0f5132] bg-[#edf7f2] border border-[#b7eb8f] px-2 py-0.5 sm:px-2.5 sm:py-0.5 rounded-full shrink-0">
                       Lab Grounding Active
                     </span>
@@ -2170,10 +2414,11 @@ export default function Dashboard({ lang, setLang, user, setUser }: Props) {
               )}
 
               {labChatLoading && (
-                <div className="p-3 sm:p-4 rounded-2xl bg-white border border-[#e7e5e4] text-xs text-[#777169] flex items-center gap-2 max-w-max shadow-xs">
-                  <RefreshCw className="w-4 h-4 text-[#292524] animate-spin" />
-                  <span>Evaluating diagnostic reference limits…</span>
-                </div>
+                <ClinicalProgressBar
+                  variant="chat"
+                  stage="Evaluating diagnostic reference limits…"
+                  subtext="Analyzing bio-reference parameters & clinical findings…"
+                />
               )}
 
               <div ref={labChatEndRef} />
@@ -2202,10 +2447,31 @@ export default function Dashboard({ lang, setLang, user, setUser }: Props) {
                 <input
                   value={labChatInput}
                   onChange={e => setLabChatInput(e.target.value)}
-                  placeholder="Ask any question about lab parameters…"
+                  placeholder={
+                    isRecordingVoice && activeRecordingChat === 'lab'
+                      ? '🔴 Listening... speak in your language (Indic Voice Engine)'
+                      : 'Ask any question about lab parameters…'
+                  }
                   disabled={labChatLoading}
-                  className="flex-1 px-3.5 py-2.5 sm:px-4 sm:py-3 rounded-full bg-[#fafafa] border border-[#e7e5e4] text-xs sm:text-sm text-[#0c0a09] placeholder-[#a8a29e] focus:outline-none focus:border-[#292524] transition-all disabled:opacity-50 min-w-0"
+                  className={`flex-1 px-3.5 py-2.5 sm:px-4 sm:py-3 rounded-full border text-xs sm:text-sm text-[#0c0a09] placeholder-[#a8a29e] focus:outline-none transition-all disabled:opacity-50 min-w-0 ${
+                    isRecordingVoice && activeRecordingChat === 'lab'
+                      ? 'bg-red-50/70 border-red-300 animate-pulse'
+                      : 'bg-[#fafafa] border-[#e7e5e4] focus:border-[#292524]'
+                  }`}
                 />
+                <button
+                  type="button"
+                  onClick={() => handleToggleVoiceInput('lab')}
+                  disabled={labChatLoading}
+                  title={isRecordingVoice && activeRecordingChat === 'lab' ? "Stop recording and transcribe" : "Speak voice query"}
+                  className={`p-2.5 sm:p-3 rounded-full transition-all flex items-center justify-center shrink-0 cursor-pointer disabled:opacity-40 ${
+                    isRecordingVoice && activeRecordingChat === 'lab'
+                      ? 'bg-red-600 text-white animate-pulse shadow-md'
+                      : 'bg-[#f0efed] hover:bg-[#e7e5e4] text-[#292524]'
+                  }`}
+                >
+                  {isRecordingVoice && activeRecordingChat === 'lab' ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
+                </button>
                 <button
                   type="submit"
                   disabled={labChatLoading || !labChatInput.trim()}
@@ -2222,7 +2488,7 @@ export default function Dashboard({ lang, setLang, user, setUser }: Props) {
       )}
 
       {/* ═══════════════════════════════════════════════════════════════════ */}
-      {/* Health Trends AI Chatbot Modal Overlay */}
+      {/* Health Trends Clinical Chatbot Modal Overlay */}
       {/* ═══════════════════════════════════════════════════════════════════ */}
       {isTrendChatOpen && (
         <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-6 bg-black/60 backdrop-blur-sm transition-all animate-fadeIn">
@@ -2236,7 +2502,7 @@ export default function Dashboard({ lang, setLang, user, setUser }: Props) {
                 </div>
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap">
-                    <h3 className="font-serif text-sm sm:text-lg font-medium sm:font-normal text-[#0c0a09] truncate">Health Trends AI Assistant</h3>
+                    <h3 className="font-serif text-sm sm:text-lg font-medium sm:font-normal text-[#0c0a09] truncate">Health Trends Clinical Assistant</h3>
                     <span className="text-[9px] sm:text-[10px] font-medium text-[#0f5132] bg-[#edf7f2] border border-[#b7eb8f] px-2 py-0.5 sm:px-2.5 sm:py-0.5 rounded-full shrink-0">
                       Telemetry Active
                     </span>
@@ -2277,10 +2543,11 @@ export default function Dashboard({ lang, setLang, user, setUser }: Props) {
               )}
 
               {trendChatLoading && (
-                <div className="p-3 sm:p-4 rounded-2xl bg-white border border-[#e7e5e4] text-xs text-[#777169] flex items-center gap-2 max-w-max shadow-xs">
-                  <RefreshCw className="w-4 h-4 text-[#292524] animate-spin" />
-                  <span>Analyzing longitudinal telemetry trajectories…</span>
-                </div>
+                <ClinicalProgressBar
+                  variant="chat"
+                  stage="Analyzing longitudinal telemetry…"
+                  subtext="Tracking historical biomarker trajectory & risk trends over time…"
+                />
               )}
 
               <div ref={trendChatEndRef} />
@@ -2308,11 +2575,32 @@ export default function Dashboard({ lang, setLang, user, setUser }: Props) {
               <form onSubmit={e => { e.preventDefault(); handleTrendChat(); }} className="flex gap-2 items-center">
                 <input
                   value={trendChatInput}
-                  onChange={e => setChatInput(e.target.value)}
-                  placeholder="Ask any question about health progress…"
+                  onChange={e => setTrendChatInput(e.target.value)}
+                  placeholder={
+                    isRecordingVoice && activeRecordingChat === 'trend'
+                      ? '🔴 Listening... speak in your language (Indic Voice Engine)'
+                      : 'Ask any question about health progress…'
+                  }
                   disabled={trendChatLoading}
-                  className="flex-1 px-3.5 py-2.5 sm:px-4 sm:py-3 rounded-full bg-[#fafafa] border border-[#e7e5e4] text-xs sm:text-sm text-[#0c0a09] placeholder-[#a8a29e] focus:outline-none focus:border-[#292524] transition-all disabled:opacity-50 min-w-0"
+                  className={`flex-1 px-3.5 py-2.5 sm:px-4 sm:py-3 rounded-full border text-xs sm:text-sm text-[#0c0a09] placeholder-[#a8a29e] focus:outline-none transition-all disabled:opacity-50 min-w-0 ${
+                    isRecordingVoice && activeRecordingChat === 'trend'
+                      ? 'bg-red-50/70 border-red-300 animate-pulse'
+                      : 'bg-[#fafafa] border-[#e7e5e4] focus:border-[#292524]'
+                  }`}
                 />
+                <button
+                  type="button"
+                  onClick={() => handleToggleVoiceInput('trend')}
+                  disabled={trendChatLoading}
+                  title={isRecordingVoice && activeRecordingChat === 'trend' ? "Stop recording and transcribe" : "Speak voice query"}
+                  className={`p-2.5 sm:p-3 rounded-full transition-all flex items-center justify-center shrink-0 cursor-pointer disabled:opacity-40 ${
+                    isRecordingVoice && activeRecordingChat === 'trend'
+                      ? 'bg-red-600 text-white animate-pulse shadow-md'
+                      : 'bg-[#f0efed] hover:bg-[#e7e5e4] text-[#292524]'
+                  }`}
+                >
+                  {isRecordingVoice && activeRecordingChat === 'trend' ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
+                </button>
                 <button
                   type="submit"
                   disabled={trendChatLoading || !trendChatInput.trim()}

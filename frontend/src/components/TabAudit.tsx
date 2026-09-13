@@ -1,5 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Upload, Volume2, Play, Pause, RefreshCw, AlertTriangle, ShieldCheck, HelpCircle, Send, Check, Eye } from 'lucide-react';
+import { Upload, Volume2, Play, Pause, RefreshCw, AlertTriangle, ShieldCheck, HelpCircle, Send, Check, Eye, Mic, MicOff, Sparkles } from 'lucide-react';
+import { playIndicSpeech, stopAllSpeech, IndicVoiceRecorder } from '../lib/voice';
+import { ClinicalProgressBar } from './ClinicalProgressBar';
+
 
 interface Medicine {
   brand_name: string;
@@ -24,10 +27,19 @@ interface TabAuditProps {
   currentLang: string;
 }
 
-export default function TabAudit({ prescriptionData, imageMeta, onUpload, loading, currentLang }: TabAuditProps) {
+export function TabAudit({
+  prescriptionData,
+  imageMeta,
+  onUpload,
+  loading,
+  currentLang
+}: TabAuditProps) {
+  const [selectedIndex, setSelectedIndex] = useState<number>(0);
   const [activeHoverIndex, setActiveHoverIndex] = useState<number | null>(null);
-  const [selectedIndex, setSelectedIndex] = useState<number | null>(0);
   const [isPlayingAudio, setIsPlayingAudio] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
+  const [chatInput, setChatInput] = useState('');
+  const voiceRecorderRef = useRef<IndicVoiceRecorder>(new IndicVoiceRecorder());
   const [showNormalized, setShowNormalized] = useState(true);
 
   // Grounded Chatbot state
@@ -37,7 +49,7 @@ export default function TabAudit({ prescriptionData, imageMeta, onUpload, loadin
       text: 'Namaste! I am your BharatDoc Assistant. I can answer questions strictly grounded in your uploaded prescription.'
     }
   ]);
-  const [chatInput, setChatInput] = useState('');
+
 
   const imgRef = useRef<HTMLImageElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -120,10 +132,10 @@ export default function TabAudit({ prescriptionData, imageMeta, onUpload, loadin
     return () => window.removeEventListener('resize', redrawCanvas);
   }, [selectedIndex, activeHoverIndex, medicines, imageMeta]);
 
-  // Vernacular Voice Briefing (Web Speech API + Pre-generated local fallback)
-  const handlePlayVoice = () => {
+  // Vernacular Voice Briefing (Indic Voice Engine + Browser fallback)
+  const handlePlayVoice = async () => {
     if (isPlayingAudio) {
-      window.speechSynthesis.cancel();
+      stopAllSpeech();
       setIsPlayingAudio(false);
       return;
     }
@@ -132,31 +144,25 @@ export default function TabAudit({ prescriptionData, imageMeta, onUpload, loadin
       .map(m => `${m.brand_name}: ${m.instructions_hi || m.timing}`)
       .join(". ");
 
-    const speechText = `नमस्ते। आपकी पर्ची की जानकारी: ${scriptText}`;
+    const speechText = currentLang === 'hi'
+      ? `नमस्ते। आपकी पर्ची की जानकारी: ${scriptText}`
+      : `Prescription summary from ${prescriptionData?.doctor_name || 'your doctor'}: ${medicines.map(m => `${m.brand_name}, ${m.timing}`).join('. ')}`;
 
-    if ('speechSynthesis' in window) {
-      window.speechSynthesis.cancel();
-      const utterance = new SpeechSynthesisUtterance(speechText);
-      utterance.lang = currentLang === 'hi' ? 'hi-IN' : currentLang === 'ta' ? 'ta-IN' : 'en-IN';
-      utterance.rate = 0.9;
-      
-      utterance.onend = () => setIsPlayingAudio(false);
-      utterance.onerror = () => {
-        // Audio fallback simulation if voice packs unavailable on machine
-        setIsPlayingAudio(false);
-      };
 
-      setIsPlayingAudio(true);
-      window.speechSynthesis.speak(utterance);
-    } else {
-      setIsPlayingAudio(true);
-      setTimeout(() => setIsPlayingAudio(false), 4000);
-    }
+    setIsPlayingAudio(true);
+    await playIndicSpeech({
+      text: speechText,
+      lang: currentLang,
+      gender: 'female',
+      onStart: () => setIsPlayingAudio(true),
+      onEnd: () => setIsPlayingAudio(false),
+      onError: () => setIsPlayingAudio(false),
+    });
   };
 
   const handleSendChat = (textToSend?: string) => {
-    const query = textToSend || chatInput;
-    if (!query.trim()) return;
+    const query = (textToSend || chatInput).trim();
+    if (!query) return;
 
     const newMsgs = [...chatMessages, { sender: 'user' as const, text: query }];
     setChatMessages(newMsgs);
@@ -179,6 +185,39 @@ export default function TabAudit({ prescriptionData, imageMeta, onUpload, loadin
 
       setChatMessages(prev => [...prev, { sender: 'bot', text: botResponse }]);
     }, 600);
+  };
+
+  const handleToggleVoiceRecording = async () => {
+    if (isRecording) {
+      setIsRecording(false);
+      const transcribed = await voiceRecorderRef.current.stopAndTranscribe(currentLang);
+      if (transcribed && transcribed.trim()) {
+        const text = transcribed.trim();
+        setChatInput(text);
+        handleSendChat(text);
+      }
+    } else {
+      setIsRecording(true);
+      const ok = await voiceRecorderRef.current.start(
+        currentLang,
+        // onInterim: Stream live text as spoken
+        (liveText: string) => {
+          setChatInput(liveText);
+        },
+        // onAutoFinal: Auto-send to clinical assistant when speech ends
+        (finalText: string) => {
+          setIsRecording(false);
+          if (finalText && finalText.trim()) {
+            const text = finalText.trim();
+            setChatInput(text);
+            handleSendChat(text);
+          }
+        }
+      );
+      if (!ok) {
+        setIsRecording(false);
+      }
+    }
   };
 
   return (
@@ -242,11 +281,12 @@ export default function TabAudit({ prescriptionData, imageMeta, onUpload, loadin
           {/* Canvas Image Container */}
           <div className="relative w-full overflow-hidden rounded-2xl bg-[#fafafa] border border-[#e7e5e4] flex items-center justify-center min-h-[420px]">
             {loading ? (
-              <div className="flex flex-col items-center gap-3 p-8">
-                <RefreshCw className="w-8 h-8 text-[#292524] animate-spin" />
-                <p className="text-xs font-medium text-[#777169]">
-                  Running OpenCV CLAHE Normalization & Gemini Bounding Box Extraction...
-                </p>
+              <div className="w-full flex items-center justify-center p-6 min-h-[300px]">
+                <ClinicalProgressBar
+                  progress={65}
+                  stage="Optical Character Recognition & Bounding Boxes…"
+                  subtext="Running OpenCV CLAHE Normalization & Bounding Box Extraction..."
+                />
               </div>
             ) : (
               <div className="relative w-full max-w-lg mx-auto">
@@ -422,9 +462,23 @@ export default function TabAudit({ prescriptionData, imageMeta, onUpload, loadin
                 type="text"
                 value={chatInput}
                 onChange={(e) => setChatInput(e.target.value)}
-                placeholder="Ask a question about this prescription..."
-                className="flex-1 px-3.5 py-2 rounded-full bg-[#fafafa] border border-[#e7e5e4] text-xs text-[#0c0a09] placeholder-[#a8a29e] focus:outline-none focus:border-[#292524]"
+                placeholder={isRecording ? "🔴 Listening... Speak now" : "Ask a question about this prescription..."}
+                className={`flex-1 px-3.5 py-2 rounded-full border text-xs text-[#0c0a09] placeholder-[#a8a29e] focus:outline-none transition-all ${
+                  isRecording ? 'bg-red-50 border-red-300 animate-pulse' : 'bg-[#fafafa] border-[#e7e5e4] focus:border-[#292524]'
+                }`}
               />
+              <button
+                type="button"
+                onClick={handleToggleVoiceRecording}
+                title={isRecording ? "Stop recording and transcribe" : "Speak voice query"}
+                className={`p-2 rounded-full transition-all ${
+                  isRecording
+                    ? 'bg-red-600 text-white animate-pulse'
+                    : 'bg-[#f0efed] hover:bg-[#e7e5e4] text-[#292524]'
+                }`}
+              >
+                {isRecording ? <MicOff className="w-3.5 h-3.5" /> : <Mic className="w-3.5 h-3.5" />}
+              </button>
               <button
                 type="submit"
                 className="p-2 rounded-full bg-[#292524] text-white hover:bg-[#0c0a09] transition-colors"
@@ -433,6 +487,7 @@ export default function TabAudit({ prescriptionData, imageMeta, onUpload, loadin
               </button>
             </form>
           </div>
+
 
         </div>
 
