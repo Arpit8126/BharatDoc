@@ -51,10 +51,14 @@ export default function AuthPage({ lang, setLang, onLogin }: AuthPageProps) {
     try {
       if (mode === 'register') {
         // Register: create user with email+password then send OTP
+        const redirectUrl = typeof window !== 'undefined' ? `${window.location.origin}/dashboard` : undefined;
         const { error: signUpErr } = await supabase.auth.signUp({
           email,
           password,
-          options: { data: { full_name: name } }
+          options: {
+            data: { full_name: name },
+            emailRedirectTo: redirectUrl,
+          }
         });
         if (signUpErr) throw signUpErr;
         await sendEmailOTP(email);

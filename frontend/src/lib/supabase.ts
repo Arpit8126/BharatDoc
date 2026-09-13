@@ -9,11 +9,12 @@ export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
  * Sends 8-digit OTP email verification via Supabase Auth
  */
 export async function sendEmailOTP(email: string) {
+  const redirectUrl = typeof window !== 'undefined' ? `${window.location.origin}/dashboard` : undefined;
   const { data, error } = await supabase.auth.signInWithOtp({
     email,
     options: {
       shouldCreateUser: true,
-      emailRedirectTo: undefined, // Enforces 8-digit OTP code entry instead of magic link redirect
+      emailRedirectTo: redirectUrl,
     }
   });
   if (error) throw error;

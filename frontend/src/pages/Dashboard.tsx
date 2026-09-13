@@ -17,7 +17,7 @@ import { savePrescriptionToSupabase, saveLabReportToSupabase, fetchLabReportsFro
 import { playIndicSpeech, stopAllSpeech, IndicVoiceRecorder } from '../lib/voice';
 import { ClinicalProgressBar } from '../components/ClinicalProgressBar';
 
-const BACKEND = 'http://localhost:8000';
+const BACKEND = (import.meta as any).env?.VITE_BACKEND_URL || (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:8000');
 
 
 
